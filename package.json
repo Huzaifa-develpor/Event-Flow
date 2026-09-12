@@ -9,9 +9,21 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@sfpy/node-sdk": "^3.0.2",
+    "bcryptjs": "^3.0.3",
+    "dotenv": "^17.4.2",
+    "framer-motion": "^13.1.1",
+    "html2canvas": "^1.4.1",
+    "html2canvas-pro": "^2.4.0",
+    "jsonwebtoken": "^9.0.3",
+    "lucide-react": "^1.33.0",
+    "mongoose": "^9.9.4",
     "next": "16.3.1",
+    "qrcode": "^1.5.4",
     "react": "19.2.8",
-    "react-dom": "19.2.8"
+    "react-dom": "19.2.8",
+    "react-qr-code": "^2.2.0",
+    "recharts": "^3.10.1"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",

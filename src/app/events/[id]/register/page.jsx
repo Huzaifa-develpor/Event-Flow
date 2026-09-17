@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useRef } from 'react';
-import { useParams, useSearchParams } from 'next/navigation';
+import { useParams, useSearchParams, useRouter } from 'next/navigation';
 import { motion, AnimatePresence } from 'framer-motion';
 import html2canvas from 'html2canvas-pro';
 import { Check, ShieldCheck, Ticket, Download, Share2, Loader2 } from 'lucide-react';
@@ -9,6 +9,7 @@ import { Check, ShieldCheck, Ticket, Download, Share2, Loader2 } from 'lucide-re
 export default function RegistrationCheckout() {
   const params = useParams();
   const searchParams = useSearchParams();
+  const router = useRouter();
   const eventId = params.id;
 
   const initialPaymentId = searchParams.get('order_id');
@@ -36,6 +37,35 @@ export default function RegistrationCheckout() {
   const [downloading, setDownloading] = useState(false);
   const [shareMsg, setShareMsg] = useState('');
 
+  // Checks if the token is missing on the client, before even calling the API.
+  // If no token, redirect straight to login instead of hitting the API at all.
+  const requireAuthOrRedirect = () => {
+    const token = localStorage.getItem('token');
+    if (!token) {
+      router.push(`/login?redirect=${encodeURIComponent(window.location.pathname + window.location.search)}`);
+      return null;
+    }
+    return token;
+  };
+
+  // Checks an API response/data for an auth failure ("Invalid or expired token", 401, etc.)
+  // If found, clears the stale token and redirects to login. Returns true if it redirected.
+  const handleAuthError = (res, data) => {
+    const isAuthError =
+      res?.status === 401 ||
+      data?.message === 'Invalid or expired token' ||
+      data?.error === 'Invalid or expired token';
+
+    if (isAuthError) {
+      localStorage.removeItem('token');
+      localStorage.removeItem('role');
+      window.dispatchEvent(new Event('auth-change'));
+      router.push(`/login?redirect=${encodeURIComponent(window.location.pathname + window.location.search)}`);
+      return true;
+    }
+    return false;
+  };
+
   useEffect(() => {
     const fetchEvent = async () => {
       try {
@@ -50,11 +80,13 @@ export default function RegistrationCheckout() {
     if (eventId) fetchEvent();
   }, [eventId]);
 
-  // SafePay se wapas aane par resume karo
+  // Resume after returning from SafePay
   useEffect(() => {
     if (!initialPaymentId || initialResult === 'cancelled') return;
 
-    const token = localStorage.getItem('token');
+    const token = requireAuthOrRedirect();
+    if (!token) return;
+
     let interval;
     let timeoutId;
 
@@ -64,6 +96,9 @@ export default function RegistrationCheckout() {
           headers: { Authorization: `Bearer ${token}` },
         });
         const payData = await payRes.json();
+
+        if (handleAuthError(payRes, payData)) return;
+
         if (payData.status !== 'success') throw new Error('Could not verify payment');
 
         const registrationId = payData.payment.registrationId;
@@ -74,6 +109,12 @@ export default function RegistrationCheckout() {
               headers: { Authorization: `Bearer ${token}` },
             });
             const data = await res.json();
+
+            if (handleAuthError(res, data)) {
+              clearInterval(interval);
+              clearTimeout(timeoutId);
+              return;
+            }
 
             if (data.status === 'success' && data.registration.registrationStatus === 'confirmed') {
               clearInterval(interval);
@@ -90,7 +131,7 @@ export default function RegistrationCheckout() {
         timeoutId = setTimeout(() => {
           clearInterval(interval);
           setPolling(false);
-          setError('Payment processing mein expected se zyada time lag raha hai. Thodi der baad page refresh karke dobara check karo.');
+          setError('Payment is taking longer than expected. Please refresh the page in a moment to check again.');
         }, 30000);
       } catch (err) {
         setPolling(false);
@@ -114,12 +155,14 @@ export default function RegistrationCheckout() {
 
   const handleCreateRegistration = async (e) => {
     e.preventDefault();
-    setLoading(true);
     setError('');
 
-    try {
-      const token = localStorage.getItem('token');
+    const token = requireAuthOrRedirect();
+    if (!token) return;
 
+    setLoading(true);
+
+    try {
       const res = await fetch('/api/registrations', {
         method: 'POST',
         headers: {
@@ -137,6 +180,9 @@ export default function RegistrationCheckout() {
       });
 
       const data = await res.json();
+
+      if (handleAuthError(res, data)) return;
+
       if (data.status !== 'success') throw new Error(data.error || 'Registration failed');
 
       setRegistration(data.registration);
@@ -149,11 +195,14 @@ export default function RegistrationCheckout() {
   };
 
   const handleProceedToPayment = async () => {
-    setLoading(true);
     setError('');
 
+    const token = requireAuthOrRedirect();
+    if (!token) return;
+
+    setLoading(true);
+
     try {
-      const token = localStorage.getItem('token');
       const returnUrl = `${window.location.origin}${window.location.pathname}`;
 
       const res = await fetch('/api/payments/checkout', {
@@ -165,11 +214,14 @@ export default function RegistrationCheckout() {
         body: JSON.stringify({
           paymentType: 'attendee',
           registrationId: registration._id,
-          returnUrl, // apne khud ke params mat jodo, SafePay khud ?order_id jodega
+          returnUrl, // Don't add our own query params here — SafePay will append its own ?order_id
         }),
       });
 
       const data = await res.json();
+
+      if (handleAuthError(res, data)) return;
+
       if (data.status !== 'success') throw new Error(data.error || 'Could not start payment');
 
       window.location.href = data.url;
@@ -372,7 +424,7 @@ export default function RegistrationCheckout() {
                 <div className="flex flex-col items-center justify-center py-10 space-y-4">
                   <Loader2 className="animate-spin text-purple-400" size={32} />
                   <p className="text-sm text-gray-300">Confirming your payment...</p>
-                  <p className="text-xs text-gray-500">Ye kuch second le sakta hai, page band mat karo.</p>
+                  <p className="text-xs text-gray-500">This may take a few seconds. Please don't close this page.</p>
                 </div>
               ) : (
                 <>
@@ -387,7 +439,7 @@ export default function RegistrationCheckout() {
                   </div>
 
                   <p className="text-xs text-gray-500">
-                    Aapko SafePay ke secure checkout page pe le jaya jayega. Card details wahi enter karni hain, humare paas kabhi nahi aati.
+                    You'll be redirected to SafePay's secure checkout page. Your card details are entered there and never stored on our end.
                   </p>
 
                   <div className="flex justify-between items-center pt-4">

@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { CheckCircle, ShieldCheck, Loader2, Image as ImageIcon } from "lucide-react";
 
 const FIXED_LISTING_FEE = 5000;
@@ -16,6 +16,7 @@ function getTodayDateString() {
 }
 
 export default function CreateEventPage() {
+  const router = useRouter();
   const searchParams = useSearchParams();
 
   const initialPaymentId = searchParams.get("order_id");
@@ -55,11 +56,42 @@ export default function CreateEventPage() {
     setFormData((prev) => ({ ...prev, [field]: value }));
   };
 
+  // Checks if the token is missing/invalid on the client, before even calling the API.
+  // If no token, redirect straight to login instead of hitting the API at all.
+  const requireAuthOrRedirect = () => {
+    const token = localStorage.getItem("token");
+    if (!token) {
+      router.push(`/login?redirect=${encodeURIComponent(window.location.pathname + window.location.search)}`);
+      return null;
+    }
+    return token;
+  };
+
+  // Checks an API response/data for an auth failure ("Invalid or expired token", 401, etc.)
+  // If found, clears the stale token and redirects to login. Returns true if it redirected.
+  const handleAuthError = (res, data) => {
+    const isAuthError =
+      res?.status === 401 ||
+      data?.message === "Invalid or expired token" ||
+      data?.error === "Invalid or expired token";
+
+    if (isAuthError) {
+      localStorage.removeItem("token");
+      localStorage.removeItem("role");
+      window.dispatchEvent(new Event("auth-change"));
+      router.push(`/login?redirect=${encodeURIComponent(window.location.pathname + window.location.search)}`);
+      return true;
+    }
+    return false;
+  };
+
   // Resume after returning from SafePay
   useEffect(() => {
     if (!initialPaymentId || initialResult === "cancelled") return;
 
-    const token = localStorage.getItem("token");
+    const token = requireAuthOrRedirect();
+    if (!token) return;
+
     let interval;
     let timeoutId;
 
@@ -69,6 +101,8 @@ export default function CreateEventPage() {
           headers: { Authorization: `Bearer ${token}` },
         });
         const payData = await payRes.json();
+
+        if (handleAuthError(payRes, payData)) return;
 
         if (payData.status !== "success") {
           throw new Error("Could not verify payment");
@@ -83,6 +117,12 @@ export default function CreateEventPage() {
               headers: { Authorization: `Bearer ${token}` },
             });
             const data = await res.json();
+
+            if (handleAuthError(res, data)) {
+              clearInterval(interval);
+              clearTimeout(timeoutId);
+              return;
+            }
 
             if (data.status === "success" && data.event.status === "published") {
               clearInterval(interval);
@@ -117,72 +157,80 @@ export default function CreateEventPage() {
   }, [initialPaymentId, initialResult]);
 
   // Form submit handler - calculates fee ONLY when organizer submits details
- const handleCreateEvent = async (e) => {
-  e.preventDefault();
-  setLoading(true);
-  setError("");
-
-  const currentCapacity = Number(formData.generalQuantity) + Number(formData.vipQuantity);
-  const currentEstRevenue =
-    Number(formData.generalPrice) * Number(formData.generalQuantity) +
-    Number(formData.vipPrice) * Number(formData.vipQuantity);
-  const currentCommission = currentEstRevenue * COMMISSION_RATE;
-  const currentTotalFee = FIXED_LISTING_FEE + currentCommission;
-
-  setFeeDetails({
-    capacity: currentCapacity,
-    estimatedRevenue: currentEstRevenue,
-    commission: currentCommission,
-    totalFee: currentTotalFee,
-  });
-
-  try {
-    const token = localStorage.getItem("token");
-
-    const res = await fetch("/api/events", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({
-        title: formData.title,
-        description: formData.description,
-        date: formData.date,
-        location: formData.location,
-        thumbnail: formData.thumbnail || undefined,
-        capacity: currentCapacity, // yahi fix hai — currentCapacity use karo, bare capacity nahi
-        tickets: [
-          { type: "general", price: formData.generalPrice, quantity: formData.generalQuantity },
-          { type: "vip", price: formData.vipPrice, quantity: formData.vipQuantity },
-        ],
-      }),
-    });
-
-    const data = await res.json();
-    if (data.status !== "success") throw new Error(data.error || "Failed to create event");
-
-    if (data.token) {
-      localStorage.setItem("token", data.token);
-      localStorage.setItem("role", data.role);
-      window.dispatchEvent(new Event("auth-change"));
-    }
-
-    setEventId(data.event._id);
-    setStep(2);
-  } catch (err) {
-    setError(err.message);
-  } finally {
-    setLoading(false);
-  }
-};
-
-  const handlePayAndPublish = async () => {
-    setLoading(true);
+  const handleCreateEvent = async (e) => {
+    e.preventDefault();
     setError("");
 
+    const token = requireAuthOrRedirect();
+    if (!token) return;
+
+    setLoading(true);
+
+    const currentCapacity = Number(formData.generalQuantity) + Number(formData.vipQuantity);
+    const currentEstRevenue =
+      Number(formData.generalPrice) * Number(formData.generalQuantity) +
+      Number(formData.vipPrice) * Number(formData.vipQuantity);
+    const currentCommission = currentEstRevenue * COMMISSION_RATE;
+    const currentTotalFee = FIXED_LISTING_FEE + currentCommission;
+
+    setFeeDetails({
+      capacity: currentCapacity,
+      estimatedRevenue: currentEstRevenue,
+      commission: currentCommission,
+      totalFee: currentTotalFee,
+    });
+
     try {
-      const token = localStorage.getItem("token");
+      const res = await fetch("/api/events", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          title: formData.title,
+          description: formData.description,
+          date: formData.date,
+          location: formData.location,
+          thumbnail: formData.thumbnail || undefined,
+          capacity: currentCapacity, // yahi fix hai — currentCapacity use karo, bare capacity nahi
+          tickets: [
+            { type: "general", price: formData.generalPrice, quantity: formData.generalQuantity },
+            { type: "vip", price: formData.vipPrice, quantity: formData.vipQuantity },
+          ],
+        }),
+      });
+
+      const data = await res.json();
+
+      if (handleAuthError(res, data)) return;
+
+      if (data.status !== "success") throw new Error(data.error || "Failed to create event");
+
+      if (data.token) {
+        localStorage.setItem("token", data.token);
+        localStorage.setItem("role", data.role);
+        window.dispatchEvent(new Event("auth-change"));
+      }
+
+      setEventId(data.event._id);
+      setStep(2);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handlePayAndPublish = async () => {
+    setError("");
+
+    const token = requireAuthOrRedirect();
+    if (!token) return;
+
+    setLoading(true);
+
+    try {
       const returnUrl = `${window.location.origin}${window.location.pathname}`;
 
       const res = await fetch("/api/payments/checkout", {
@@ -200,6 +248,9 @@ export default function CreateEventPage() {
       });
 
       const data = await res.json();
+
+      if (handleAuthError(res, data)) return;
+
       if (data.status !== "success") throw new Error(data.error || "Payment failed");
 
       window.location.href = data.url;
